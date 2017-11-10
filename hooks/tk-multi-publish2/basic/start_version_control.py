@@ -10,6 +10,7 @@
 
 import os
 import sgtk
+from sgtk import TankError
 
 from pyfbsdk import FBApplication, FBFilePopup, FBFilePopupStyle
 
@@ -323,12 +324,17 @@ def _save_as_session():
     if saveDialog.Execute():
         mb_app.FileSave(saveDialog.FullFilename)
 
-def _get_save_as_action():
+def _get_save_as_action(context=None):
     """
-
     Simple helper for returning a log action dict for saving the session
+
+    :param context: The context in which we want the save dialog to be
     """
     engine = sgtk.platform.current_engine()
+
+    if context and engine.context != context:
+        _change_context(context)
+        engine = sgtk.platform.current_engine()
 
     # default save callback
     callback = lambda: _save_as_session()
@@ -346,6 +352,24 @@ def _get_save_as_action():
             "callback": callback
         }
     }
+
+
+def _change_context(ctx):
+    """
+    Set context to the new context.
+
+    :param ctx: The :class:`sgtk.Context` to change to.
+
+    :raises TankError: Raised when the context change fails.
+    """
+    engine = sgtk.platform.current_engine()
+    engine.log_debug("Changing context from %s to %s" % (engine.context, ctx))
+
+    try:
+        sgtk.platform.change_context(ctx)
+    except Exception, e:
+        engine.log_exception("Context change failed!")
+        raise TankError("Failed to change work area - %s" % e)
 
 def _get_version_docs_action():
     """

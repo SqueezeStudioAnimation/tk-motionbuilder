@@ -121,7 +121,6 @@ class MotionBuilderSessionCollector(HookBaseClass):
         # that it can be used by attached publish plugins
         work_template_setting = settings.get("Work Template")
         if work_template_setting:
-
             work_template = publisher.engine.get_template_by_name(
                 work_template_setting.value)
 
@@ -132,6 +131,11 @@ class MotionBuilderSessionCollector(HookBaseClass):
             # execution time.
             session_item.properties["work_template"] = work_template
             self.logger.debug("Work template defined for Motion Builder collection.")
+
+        # In case we are already on a task, we want to prevent the user to be able to change it.
+        # If he need, he will have to use the file open instead. Done to prevent any weird switch
+        if self.parent.context.task:
+            session_item.context_change_allowed = False
 
         self.logger.info("Collected current Motion Builder scene")
 

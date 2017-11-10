@@ -10,6 +10,7 @@
 
 import os
 import sgtk
+from sgtk import TankError
 
 from pyfbsdk import FBApplication, FBFilePopup, FBFilePopupStyle
 
@@ -17,6 +18,29 @@ mb_app = FBApplication()
 
 HookBaseClass = sgtk.get_hook_baseclass()
 
+# TODO - Possibly define more shotgun entity template info
+CONTEXT_TEMPLATE = {
+    "routine":
+        {
+            "work_template": "mobu_routine_work",
+            "publish_template": "mobu_routine_publish",
+        },
+    "routine_subsession":
+        {
+            "work_template": "mobu_routine_subsession_work",
+            "publish_template": "mobu_routine_subsession_publish",
+        },
+    "mocaptake":
+        {
+            "work_template": "mobu_mocaptake_work",
+            "publish_template": "mobu_mocaptake_publish",
+        },
+    "mocaptake_subsession":
+        {
+            "work_template": "mobu_mocaptake_subsession_work",
+            "publish_template": "mobu_mocaptake_subsession_publish",
+        },
+}
 
 class MotionBuilderSessionPublishPlugin(HookBaseClass):
     """
@@ -118,6 +142,12 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
                                "correspond to a template defined in "
                                "templates.yml.",
             },
+            "Force Template": {
+                "type": "boolean",
+                "default": True,
+                "description": "Is the publish plugin allowed to publish without template validation. If not, "
+                               "more validation will be done to be able to get the good template for the context"
+            },
         }
 
         # update the base settings
@@ -170,7 +200,7 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
             # validation will succeed.
             self.logger.warn(
                 "The Motion Builder session has not been saved.",
-                extra=_get_save_as_action()
+                extra=_get_save_as_action(item.context)
             )
 
         # because a publish template is configured, disable context change. This
@@ -181,7 +211,7 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
 
         self.logger.info(
             "Motion Builder '%s' plugin accepted the current Motion Builder session." %
-            (self.name,)
+            ("Publish Session",)
         )
         return {
             "accepted": True,
@@ -203,15 +233,26 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
         publisher = self.parent
         path = _session_path()
 
+        force_template = settings.get("Force Template")
+
         if not path:
             # the session still requires saving. provide a save button.
             # validation fails.
             error_msg = "The Motion Builder session has not been saved."
             self.logger.error(
                 error_msg,
-                extra=_get_save_as_action()
+                extra=_get_save_as_action(item.context)
             )
             raise Exception(error_msg)
+
+        # Refuse validation if we force template and don't have a task. Right now, template to publish data
+        # are only use with task
+        if force_template and not item.context.task:
+            error_msg = "A task need to be selected before publishing"
+            self.logger.error(
+                error_msg,
+            )
+            return False
 
         # ensure we have an updated project root
         project_root = os.path.dirname(path)
@@ -221,7 +262,7 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
         if not project_root:
             self.logger.info(
                 "Your session is not part of a Motion Builder project.",
-                extra = _get_save_as_action()
+                extra=_get_save_as_action()
             )
 
         # ---- check the session against any attached work template
@@ -235,18 +276,29 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
         # matches. if not, warn the user and provide a way to save the file to
         # a different path
         work_template = item.properties.get("work_template")
+        if not work_template:
+            if force_template:
+                self._get_templates_from_context(item)
+                work_template = item.properties.get("work_template")
+                # If we still are not able to find the template, fail the validation
+                if not work_template:
+                    self.logger.error("No work template configured. "
+                                      "Validation failed since Force Template settings is on")
+                    return False
+            else:
+                self.logger.debug("No work template configured.")
+
         if work_template:
             if not work_template.validate(path):
-                self.logger.warning(
-                    "The current session does not match the configured work "
-                    "file template.",
-                    extra = _get_save_as_action()
-                )
+                msg = "The current session does not match the configured work file template."
+                if not force_template:
+                    self.logger.warning(msg, extra=_get_save_as_action(context=item.context))
+                else:
+                    self.logger.error(msg, extra=_get_save_as_action(context=item.context))
+                    return False
             else:
                 self.logger.debug(
                     "Work template configured and matches session file.")
-        else:
-            self.logger.debug("No work template configured.")
 
         # ---- see if the version can be bumped post-publish
 
@@ -284,6 +336,16 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
             publish_template_setting.value)
         if publish_template:
             item.properties["publish_template"] = publish_template
+        else:
+            # In these case, we want to determine automatically the context
+            if force_template:
+                self._get_templates_from_context(item)
+                publish_template = item.properties.get("publish_template")
+                if not publish_template:
+                    # Try to get the good template, else get the one from the config
+                    self.logger.error("No publish template configured. Validation failed since Force "
+                                      "Template settings is on")
+                    return False
 
         # set the session path on the item for use by the base plugin validation
         # step. NOTE: this path could change prior to the publish phase.
@@ -332,6 +394,55 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
         # bump the session file to the next version
         self._save_to_next_version(item.properties["path"], item, _save_session)
 
+    def _get_templates_from_context(self, item):
+        """
+        Special function to get the template for an item using the context assigned to it. It will analyze the item
+        context and use the variable CONTEXT_TEMPLATE to determine what are the template to return.
+
+        Take into consideration that not all entity type are currently supported with the functionnality. It will also
+        be only use if Force Template setting is set to True
+
+        :param item: The UI item on which we will have the context information and where we will stock the template
+
+        :return: Return a tuple containing the work template and publish template
+        """
+
+        self.logger.info("Determining template automatically")
+
+        publisher = self.parent
+
+        ctx_entity = item.context.entity
+        entity_type = ctx_entity["type"]
+
+        if entity_type.lower() not in CONTEXT_TEMPLATE:
+            self.logger.debug("Could not determine template for entity %s of type %s. "
+                              "Context is currently not supported" % (item.context.entity, entity_type,))
+            return
+        else:
+            # Right now, all the supported entity have sg_session and sg_subsession field. If new entity need to be
+            # supported, an entity check will be needed
+            fields = ["sg_session", "sg_subsession"]
+
+            ctx_entity = self.parent.shotgun.find_one(entity_type, filters=[("id", "is", ctx_entity["id"])],
+                                                      fields=fields)
+            if not ctx_entity:
+                self.logger.debug("Could not determine template for entity %s of type %s. "
+                                  "Entity supplementary info could not be found" %
+                                  (item.context.entity, ctx_entity["type"],))
+                return
+            else:
+                template_info = CONTEXT_TEMPLATE[entity_type.lower()]
+                if ctx_entity["sg_subsession"]:
+                    template_info = CONTEXT_TEMPLATE[ctx_entity["type"] + "_subsession"]
+
+                if not item.properties.get("work_template"):
+                    item.properties["work_template"] = publisher.engine.get_template_by_name(template_info
+                                                                                             ["work_template"])
+                if not item.properties.get("publish_template"):
+                    item.properties["publish_template"] = publisher.engine.get_template_by_name(template_info
+                                                                                                ["publish_template"])
+
+
 def _session_path():
     """
     Return the path to the current session
@@ -368,12 +479,18 @@ def _save_as_session():
     if saveDialog.Execute():
         mb_app.FileSave(saveDialog.FullFilename)
 
-def _get_save_as_action():
-    """
 
+def _get_save_as_action(context=None):
+    """
     Simple helper for returning a log action dict for saving the session
+
+    :param context: The context in which we want the save dialog to be
     """
     engine = sgtk.platform.current_engine()
+
+    if context and engine.context != context:
+        _change_context(context)
+        engine = sgtk.platform.current_engine()
 
     # default save callback
     callback = lambda: _save_as_session()
@@ -391,3 +508,21 @@ def _get_save_as_action():
             "callback": callback
         }
     }
+
+
+def _change_context(ctx):
+    """
+    Set context to the new context.
+
+    :param ctx: The :class:`sgtk.Context` to change to.
+
+    :raises TankError: Raised when the context change fails.
+    """
+    engine = sgtk.platform.current_engine()
+    engine.log_debug("Changing context from %s to %s" % (engine.context, ctx))
+
+    try:
+        sgtk.platform.change_context(ctx)
+    except Exception, e:
+        engine.log_exception("Context change failed!")
+        raise TankError("Failed to change work area - %s" % e)
