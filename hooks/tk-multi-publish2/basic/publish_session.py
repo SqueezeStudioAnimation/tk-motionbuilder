@@ -40,6 +40,11 @@ CONTEXT_TEMPLATE = {
             "work_template": "mobu_mocaptake_subsession_work",
             "publish_template": "mobu_mocaptake_subsession_publish",
         },
+    "asset":
+        {
+            "work_template": "mobu_asset_work",
+            "publish_template": "mobu_asset_publish",
+        },
 }
 
 class MotionBuilderSessionPublishPlugin(HookBaseClass):
@@ -413,15 +418,16 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
 
         ctx_entity = item.context.entity
         entity_type = ctx_entity["type"]
+        is_routine_or_take = entity_type == "Routine" or entity_type == "MocapTake"
 
         if entity_type.lower() not in CONTEXT_TEMPLATE:
             self.logger.debug("Could not determine template for entity %s of type %s. "
                               "Context is currently not supported" % (item.context.entity, entity_type,))
             return
         else:
-            # Right now, all the supported entity have sg_session and sg_subsession field. If new entity need to be
-            # supported, an entity check will be needed
-            fields = ["sg_session", "sg_subsession"]
+            fields = []
+            if is_routine_or_take:
+                fields = ["sg_session", "sg_subsession"]
 
             ctx_entity = self.parent.shotgun.find_one(entity_type, filters=[("id", "is", ctx_entity["id"])],
                                                       fields=fields)
@@ -432,7 +438,7 @@ class MotionBuilderSessionPublishPlugin(HookBaseClass):
                 return
             else:
                 template_info = CONTEXT_TEMPLATE[entity_type.lower()]
-                if ctx_entity["sg_subsession"]:
+                if is_routine_or_take and ctx_entity["sg_subsession"]:
                     template_info = CONTEXT_TEMPLATE[ctx_entity["type"] + "_subsession"]
 
                 if not item.properties.get("work_template"):
