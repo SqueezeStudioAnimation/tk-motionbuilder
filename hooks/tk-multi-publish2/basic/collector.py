@@ -12,8 +12,10 @@ import os
 import sgtk
 
 from pyfbsdk import FBApplication
+from pyfbsdk import FBSystem
 
 mb_app = FBApplication()
+mb_scene = FBSystem().Scene
 
 HookBaseClass = sgtk.get_hook_baseclass()
 
@@ -116,6 +118,40 @@ class MotionBuilderSessionCollector(HookBaseClass):
         # publishable items
         project_root = path
         session_item.properties["project_root"] = project_root
+
+        # We will gather all the user cam from the scene. If none is found, we will only return the perspective
+        # one at the moment
+        user_cams = []
+        persp_cam = None
+        for cam in mb_scene.Cameras:
+            if not cam.SystemCamera:
+                user_cams.append(cam)
+            else:
+                # Default one. Cannot be deleted in mobu so is a safe backup
+                if cam.Name == 'Producer Perspective':
+                    persp_cam = cam
+
+        # Now gather all the takes in the scene and create a child item with it. It will be used to
+        # show users options to create a render for those different takes
+        for obj in mb_scene.Takes:
+            # create the take item for the publish hierarchy
+            take_item = session_item.create_item(
+                "motionbuilder.take",
+                "Motion Builder Take",
+                obj.Name
+            )
+
+            # get the icon path to display for this item
+            icon_path = os.path.join(
+                self.disk_location,
+                os.pardir,
+                "icons",
+                "clapperboard.png"
+            )
+            take_item.set_icon_from_path(icon_path)
+
+            take_item.properties["cam_list"] = user_cams if user_cams else [persp_cam]
+            self.logger.info("Collected current Motion Builder scene Take %s" % (obj.Name, ))
 
         # if a work template is defined, add it to the item properties so
         # that it can be used by attached publish plugins
