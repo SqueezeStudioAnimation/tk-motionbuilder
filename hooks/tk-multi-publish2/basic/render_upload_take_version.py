@@ -440,10 +440,30 @@ class RenderUploadTakeVersion(HookBaseClass):
                 return False
         '''
 
+        regex = '^[a-zA-Z0-9_]*$'
+
         # Validate that the take name (item name) doesn't have any invalid character that shotgun does not support in it
-        if not re.match('^[a-zA-Z0-9_]*$', item.name):
+        if not re.match(regex, item.name):
             self.logger.error("Take name should only contain letters, numbers and underscore. Else, problem could"
                               "happen with shotgun. Please fix your take name before publishing")
+            return False
+
+        # Also validate the different camera name used to render,
+        bad_cam_name = False
+        cam_selected = False
+        for cam_name, state in settings["cams"].value.iteritems():
+            if state:
+                cam_selected = True
+                if not re.match(regex, cam_name):
+                    bad_cam_name = True
+                    self.logger.error("Camera named %s should only contain letters, numbers and underscore. Else, "
+                                      "problem could happen with shotgun. "
+                                      "Please fix the camera name before publishing" % (cam_name,))
+        if not cam_selected:
+            self.logger.warning("Please select at least one camera to be able to render the scene")
+            return False
+
+        if bad_cam_name:
             return False
 
         return True
@@ -458,13 +478,18 @@ class RenderUploadTakeVersion(HookBaseClass):
         :param item: Item to process
         """
 
+        from pyfbsdk import FBSystem
+        system = FBSystem()
+
         # TODO - Use sstk export_render_mobu functionnality to correctly generate and upload a render to shotgun
-        publish_data = item.parent.properties["sg_publish_data"]
+        publish_data = item.parent.properties.get("sg_publish_data", None)
 
         if not publish_data:
-            self.logger.error("Could not generate render without publishing the file first. Please, ensure to check"
-                              "the publish plugin before publishing for video.")
+            raise Exception("Could not generate render without publishing the file first. Please, ensure to check"
+                            "the publish plugin before publishing for video.")
         else:
+            # Keep the current cam to set it after the rendering pass
+            cur_cam = system.Renderer.CurrentCamera
             # TODO - When needed, support farm render
             cam_list_str = ""
             for cam_name, state in settings["cams"].value.iteritems():
@@ -479,6 +504,8 @@ class RenderUploadTakeVersion(HookBaseClass):
                                                                cameras=cam_list_str,
                                                                render_local=True)
                 render_job.main()
+            if cur_cam:
+                system.Renderer.CurrentCamera = cur_cam
             else:
                 self.logger.info("No render will be done since no cameras have been selected")
 

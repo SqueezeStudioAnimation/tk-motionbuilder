@@ -10,6 +10,7 @@
 
 import os
 import sgtk
+import shutil
 from sgtk import TankError
 
 from pyfbsdk import FBApplication, FBFilePopup, FBFilePopupStyle
@@ -467,6 +468,16 @@ def _save_session(path):
     """
 
     mb_app.FileSave(path)
+
+    # Clean all the possible .fbm and .bck folder created by
+    for ext in ["fbm", "bck"]:
+        folder_name = path.replace("fbx", ext)
+        if os.path.exists(folder_name):
+            # Just ensure that it will not crash in case it is not a folder
+            try:
+                shutil.rmtree(folder_name)
+            except:
+                pass
 
 
 def _save_as_session():
