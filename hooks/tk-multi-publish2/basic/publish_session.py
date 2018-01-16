@@ -470,7 +470,8 @@ def _save_session(path):
     mb_app.FileSave(path)
 
     # Clean all the possible .fbm and .bck folder created by
-    for ext in ["fbm", "bck"]:
+    # Previously, .fbm folder were removed, but it seem to break all texture from the scene...
+    for ext in ["bck"]:
         folder_name = path.replace("fbx", ext)
         if os.path.exists(folder_name):
             # Just ensure that it will not crash in case it is not a folder
