@@ -10,8 +10,7 @@
 
 import abc
 import os
-import functools
-import pprint
+import re
 
 import sgtk
 
@@ -19,6 +18,7 @@ from sgtk.platform.qt import QtCore, QtGui
 
 from sstk.shotgun.class_Performer import Performer
 from sstk.shotgun.class_PhysicalAsset import PhysicalAsset
+import sstk.jobs.export_render_mobu as job_export_render_mobu
 
 HookBaseClass = sgtk.get_hook_baseclass()
 
@@ -87,60 +87,43 @@ class WidgetHandlerBase(object):
         pass
 
 
-class ComboBoxHandler(WidgetHandlerBase):
+# TODO - For x reason, in motionbuilder we have a problem with tri-state. There is no difference between checked and
+# partially check...
+class CheckboxHandler(WidgetHandlerBase):
     """
-    Shows the editor widget with a label or checkbox depending on whether
-    the widget is in multi-edit mode or not.
+    Handles a checkbox in multi-value and single-value scenarios.
 
-    When multiple values are available for this widget, the widget will by
-    default be disabled and a checkbox will appear unchecked. By checking the
-    checkbox, the user indicates they want to override the value with a specific
-    one that will apply to all items.
+    When there's multiple different values available for the checkbox, it will
+    be displayed with a partially checked state.
     """
-
     def __init__(self, layout, text):
         """
-        :param layout: Layout to add the widget into.
-        :param text: Text on the left of the editor widget.
+        :param layout: Layout in witch to add the widget.
+        :param text: Name of the setting.
         """
-        super(ComboBoxHandler, self).__init__(QtGui.QComboBox())
-
-        self._layout = QtGui.QHBoxLayout()
-        self._label = QtGui.QLabel(text)
-
-        # FIXME: Should take the size of the text + icon as the minimum width.
-        self._label.setMinimumWidth(50)
-
-        self._editor.addItems([name for name, cls in ACTOR_TYPE_LIST])
-
-        self._layout.addWidget(self._label)
-        self._layout.addWidget(self.editor)
-
-        layout.addRow(self._layout)
+        super(CheckboxHandler, self).__init__(QtGui.QCheckBox(text))
+        layout.addWidget(self.editor)
+        self.editor.setTristate(False)
 
     def _apply_edit_mode(self):
         """
         Updates the UI to indicate the widget has multiple values or not.
         """
-        # When the multi-edit mode is on we want to
-        #  - show the check box
-        #  - hide the label
-        #  - disable the editor
-        self._label.setVisible(self.multi_edit_mode is False)
-        self._editor.setEnabled(self.multi_edit_mode is False)
+        self.editor.setTristate(self.multi_edit_mode)
+        # We're into multi-edit mode, so indicate the value is undetermined.
+        if self.multi_edit_mode:
+            self.editor.setCheckState(QtCore.Qt.PartiallyChecked)
 
     def is_value_available(self):
         """
         Indicates if a value is available to be consumed.
         """
-        # If we're not in multi-edit mode, the value is available.
-        if not self.multi_edit_mode:
-            return True
-        else:
-            return True
+        # If the checkbox is not partially checked, then the user has settled
+        # on a value.
+        return self.editor.checkState() != QtCore.Qt.PartiallyChecked
 
 
-class ActorsWidgetController(QtGui.QWidget):
+class CamerasWidgetController(QtGui.QWidget):
     """
     Custom Ui to let the user choose manually which type of actor should be use to stock the information on shotgun
     """
@@ -150,52 +133,49 @@ class ActorsWidgetController(QtGui.QWidget):
         """
         QtGui.QWidget.__init__(self, parent)
 
+        self.cam_checkboxes = []
+
         self.layout = QtGui.QFormLayout(self)
         self.setLayout(self.layout)
-        self.actor_widget_dict = {}
 
-    def setup_actors_widget(self, actors, previous_dict=None):
+        self._render_type_chk = CheckboxHandler(self.layout, "Send to farm (Currently unavailable)")
+        self._render_type_chk.editor.setEnabled(False)
+        self._cam_lbl = QtGui.QLabel("Choose which camera(s) you want to render from")
+        self.layout.addWidget(self._cam_lbl)
+
+    def setup_cams_widget(self, cams):
         """
         Create all the needed widget to show the different actor to create on shotgun.
 
-        :param actors: List fo actors to show and give the possibility to change it's type
-        :param previous_dict: The previous dictionary giving the info on what already been set or not. It's needed since
-                              each time a custom widget is shown, the old one is deleted...
+        :param cams: List fo actors to show and give the possibility to change it's type
         """
 
-        for act in sorted(actors, key=lambda actor: actor[0]):
-            idx_to_set = 0
-            if previous_dict and act in previous_dict:
-                idx_to_set = previous_dict[act]
+        for cam in sorted(cams, key=lambda cam: cam.Name):
+            chkh = CheckboxHandler(self.layout, cam.Name)
+            chkh.editor.setChecked(False)
+            self.cam_checkboxes.append(chkh)
+            # chkh.editor.stateChanged.connect(functools.partial(self._on_state_changed, cam.Name))
 
-            cbh = ComboBoxHandler(self.layout, act)
-            cbh.editor.setCurrentIndex(idx_to_set)
-            cbh.editor.currentIndexChanged.connect(functools.partial(self._on_index_changed, act))
-            self.actor_widget_dict[act] = idx_to_set
-
-    def _on_index_changed(self, act_name, new_idx):
+    def send_to_farm(self):
         """
-        Used when the event currentIndexChanged is called on on of the ComboBox  (ComboBox)
-        It will flag the controller to update the settings
+        Return the status of the take render to know if we want to send it on the farm or not
 
-        :param new_idx: The new index set for the combo box
-        :param act_name: The name of the actor related to the combo box type
+        :return: True if the used checked the farm checkbox else False
+        """
+
+        return self._render_type_chk.editor.isChecked()
+
+    def _on_state_changed(self, cam, state):
+        """
+        Used when the state of a cam checkbox is changed. It will be used to maintain information
+        about which camera need to be used or not
+
+        :param cam: The new index set for the combo box
+        :param state: The new state of the checkbox
         """
 
         # Flag the controller to update the settings
-        self.actor_widget_dict[act_name] = new_idx
-
-    def update_actor_settings(self, actor_str, new_idx):
-        """
-        Will update the specific actor_widget_dict dictionary entry to make sure the current selected index is the
-        good one
-
-        :param actor_str: String representing the name of the actor (aka, the key in the dict)
-        :param new_idx: The new index that changed and need to be set
-        """
-
-        if actor_str in self.actor_widget_dict:
-            self.actor_widget_dict[actor_str] = new_idx
+        self.cam_widget_dict[cam] = state
 
 
 class RenderUploadTakeVersion(HookBaseClass):
@@ -209,10 +189,9 @@ class RenderUploadTakeVersion(HookBaseClass):
         """
         super(RenderUploadTakeVersion, self).__init__(*args, **kwargs)
 
-        self._actor_widget = None
+        self._cam_widget = None
         self._item = None
 
-    # TODO - Find a specific icon ?
     @property
     def icon(self):
         """
@@ -227,7 +206,6 @@ class RenderUploadTakeVersion(HookBaseClass):
             "video.png"
         )
 
-    '''
     def create_settings_widget(self, parent):
         """
         Creates a QT widget, parented below the given parent object, to
@@ -238,33 +216,126 @@ class RenderUploadTakeVersion(HookBaseClass):
         """
 
         # If the widget already exist, do try to recreate it
-        actors = self._item.properties.get("actors", None)
-        previous_dict = None
-        if self._actor_widget:
-            previous_dict = self._actor_widget.actor_widget_dict
+        cams = self._item.properties.get("cam_list", None)
 
-        self._actor_widget = ActorsWidgetController(parent)
-        self._actor_widget.setup_actors_widget(actors, previous_dict)
+        self._cam_widget = CamerasWidgetController(parent)
+        self._cam_widget.setup_cams_widget(cams)
 
-        return self._actor_widget
+        return self._cam_widget
 
     def get_ui_settings(self, controller):
         """
         Returns the modified settings.
-        """
-        settings = {}
 
+        :param: The controller on which the settings should be pulled off
+        """
+
+        settings = {}
+        # Re-initialize the cams dictionary info
+        settings["cams"] = {}
+
+        # Ensure to copy the settings and not only reference them since the ui is not always rebuilt when
+        # the user go from the same plugin entry to another one
         if controller:
-            settings["actors"] = controller.actor_widget_dict
+            # Only set the settings if we are certain to now have a multi-edit mode with different value
+            for chk in controller.cam_checkboxes:
+                if chk.is_value_available():
+                    # Stock the int since deepcopy doesn't seem to support QtCore.Qt.CheckState values
+                    settings["cams"][chk.editor.text()] = int(chk.editor.checkState())
 
         return settings
 
+    def _requires_multi_edit_mode(self, tasks_settings, setting_name):
+        """
+        Will check the different task settings to see if they are all at the same value. If that's not the case
+        multi-edit mode is needed
+
+        :param tasks_settings: All the different tasks setting compare
+        :param setting_name: The name of the setting wanted to be compared
+
+        :returns: True if the setting is the same for every task, False otherwise.
+        """
+        return all(
+            tasks_settings[0][setting_name] == task_setting[setting_name]
+            for task_setting in tasks_settings
+        ) is False
+
+    def _cams_settings_requires_multi_edit_mode(self, tasks_settings, cam_name):
+        """
+        Check if all the different tasks setting have a specific camera name value in there settings. If it's found,
+        compare there value.
+
+        :param tasks_settings: The different task settings to compare
+        :param cam_name: The specific name of the same to check
+        :return: True if the cam name setting is not the same on each setting or it exists on a setting and not on
+                 others one. Else, return False
+        """
+
+        cam_exists_setting = []
+        for settings in tasks_settings:
+            if cam_name in settings["cams"]:
+                cam_exists_setting.append(settings)
+
+        # In case all cam name setting don't exist, return False since all param are equal
+        if not cam_exists_setting:
+            return False
+
+        # If not all settings have the cam param set, check if the existing one are all false
+        if len(tasks_settings) != len(cam_exists_setting):
+            for setting in cam_exists_setting:
+                if setting["cams"][cam_name]:
+                    return True
+            # No return have been done, everything is false, so all settings will be equal
+            return False
+
+        # Finally, if all cam name setting exist, compare there value to know if we need multi-edit mode
+        return all(
+            tasks_settings[0]["cams"][cam_name] == task_setting["cams"][cam_name]
+            for task_setting in tasks_settings
+        ) is False
+
     def set_ui_settings(self, controller, tasks_settings):
         """
-        Updates the UI with the list of settings.
+        Updates the UI with the list of settings. Happen when the user select the plugin. Settings should be updated
+        by the function get_ui_settings
+
+        :param controller: The controller on which we want to update the settings
         """
-        pass
-    '''
+
+        # TODO - Support multi edit of send to farm checkbox when it will be implemented
+
+        for chk in controller.cam_checkboxes:
+            cam_name = chk.editor.text()
+            if cam_name in tasks_settings[0]["cams"]:
+                chk.multi_edit_mode = self._cams_settings_requires_multi_edit_mode(tasks_settings, cam_name)
+                # The case where other task settings doesn't have it's cams property dict set correctly will is handled
+                # by the multi edit mode check
+                if chk.multi_edit_mode is False:
+                    chk.editor.setCheckState(
+                        QtCore.Qt.Checked if tasks_settings[0]["cams"][cam_name] else QtCore.Qt.Unchecked
+                    )
+            else:
+                # Do the check to know if all settings are at the same value
+                chk.multi_edit_mode = self._cams_settings_requires_multi_edit_mode(tasks_settings, cam_name)
+                if chk.multi_edit_mode is False:
+                    chk.editor.setCheckState(QtCore.Qt.Unchecked)
+
+    def manage_ui_settings(self, task, settings):
+        """
+        Function to help updating settings that would have nested element in it. Instead of just replace the setting
+        entry, we will allow the plugin to update it by itself in the current task
+
+        :param task: The task (Which is a combination of item + plugin) on which we want to update settings
+        :param settings: The new updated settings
+        """
+        for k, v in settings.iteritems():
+            # In case of cameras, we will want to go through all the entry of the cam to udpate them correctly, since
+            # cam setting is a dictionary
+            if k == "cams":
+                for cam_name, val in v.iteritems():
+                    task.settings[k].value[cam_name] = val
+            else:
+                task.settings[k].value = v
 
     @property
     def name(self):
@@ -284,23 +355,20 @@ class RenderUploadTakeVersion(HookBaseClass):
     @property
     def settings(self):
         """
-        Dictionary defining the settings that this plugin expects to receive
+        Dictionary defining the settings that this plugin expects to recieve
         through the settings parameter in the accept, validate, publish and
         finalize methods.
 
-        A dictionary on the following form::
-
-            {
-                "Settings Name": {
-                    "type": "settings_type",
-                    "default": "default_value",
-                    "description": "One line description of the setting"
-            }
-
-        The type string should be one of the data types that toolkit accepts as
-        part of its environment configuration.
+        In the current case, we will have a internal setting that will be set to know which camera should be use
+        to render a specific take
         """
-        return {}
+        return {
+            "cams": {
+                "type": "dict",
+                "default": {},
+                "description": "Represent a dictionary of cameras with there render status"
+            },
+        }
 
     @property
     def item_filters(self):
@@ -340,6 +408,7 @@ class RenderUploadTakeVersion(HookBaseClass):
         """
         self._item = item
         if not self._item.properties.get("cam_list", None):
+            self.logger.info("No cam_list property could be found")
             return {"accepted": False}
         else:
             return {"accepted": True}
@@ -358,7 +427,25 @@ class RenderUploadTakeVersion(HookBaseClass):
         :returns: True if item is valid, False otherwise.
         """
 
-        # See if we need to validate anything, at the moment, just return true
+        # Right now we will not validate anything, but it could be nice to ensure that
+        # TODO - Find a way to know if the publish plugin is active or not.
+        # It doesn't work at the moment since we are not able to access the tree node item of the plugin from the
+        # current item parent...
+        '''
+        for t in item.parent.tasks:
+            if t.plugin.name.lower() == "publish to shotgun" and t.checked and t.enabled:
+                return True
+            else:
+                self.logger.error("To be able to generate a render, please ensure to check the publish plugin first.")
+                return False
+        '''
+
+        # Validate that the take name (item name) doesn't have any invalid character that shotgun does not support in it
+        if not re.match('^[a-zA-Z0-9_]*$', item.name):
+            self.logger.error("Take name should only contain letters, numbers and underscore. Else, problem could"
+                              "happen with shotgun. Please fix your take name before publishing")
+            return False
+
         return True
 
     def publish(self, settings, item):
@@ -372,7 +459,28 @@ class RenderUploadTakeVersion(HookBaseClass):
         """
 
         # TODO - Use sstk export_render_mobu functionnality to correctly generate and upload a render to shotgun
-        pass
+        publish_data = item.parent.properties["sg_publish_data"]
+
+        if not publish_data:
+            self.logger.error("Could not generate render without publishing the file first. Please, ensure to check"
+                              "the publish plugin before publishing for video.")
+        else:
+            # TODO - When needed, support farm render
+            cam_list_str = ""
+            for cam_name, state in settings["cams"].value.iteritems():
+                if state:
+                    if not cam_list_str:
+                        cam_list_str += cam_name
+                    else:
+                        cam_list_str += ":" + cam_name
+            if cam_list_str:
+                render_job = job_export_render_mobu.create_job(publish_data["id"],
+                                                               takes=item.name,
+                                                               cameras=cam_list_str,
+                                                               render_local=True)
+                render_job.main()
+            else:
+                self.logger.info("No render will be done since no cameras have been selected")
 
     def finalize(self, settings, item):
         """
