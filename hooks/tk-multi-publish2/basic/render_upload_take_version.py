@@ -441,6 +441,9 @@ class RenderUploadTakeVersion(HookBaseClass):
         '''
 
         regex = '^[a-zA-Z0-9_]*$'
+        # Special regex to support default camera from motion builder. The name space will be fixed in the export job
+        # to ensure not space is found
+        producer_regex = '^Producer [a-zA-Z0-9_]*$'
 
         # Validate that the take name (item name) doesn't have any invalid character that shotgun does not support in it
         if not re.match(regex, item.name):
@@ -454,7 +457,7 @@ class RenderUploadTakeVersion(HookBaseClass):
         for cam_name, state in settings["cams"].value.iteritems():
             if state:
                 cam_selected = True
-                if not re.match(regex, cam_name):
+                if not re.match(regex, cam_name) and not re.match(producer_regex, cam_name):
                     bad_cam_name = True
                     self.logger.error("Camera named %s should only contain letters, numbers and underscore. Else, "
                                       "problem could happen with shotgun. "
@@ -502,8 +505,11 @@ class RenderUploadTakeVersion(HookBaseClass):
                 render_job = job_export_render_mobu.create_job(publish_data["id"],
                                                                takes=item.name,
                                                                cameras=cam_list_str,
-                                                               render_local=True)
-                render_job.main()
+                                                               render_local=True,
+                                                               main_return_value=True)
+                if not render_job.main():
+                    raise Exception("Render generation failed, please look at the script editor for more information or"
+                                    "ask your favorite TD help :)")
             if cur_cam:
                 system.Renderer.CurrentCamera = cur_cam
             else:
